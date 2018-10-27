@@ -1,4 +1,4 @@
-WXML extensions to Facebook JSX AST
+WXML AST Specification
 ====================================
 
 WXML extends Facebook [JSX AST](https://github.com/facebook/jsx/blob/master/AST.md) with the following node types:
