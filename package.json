@@ -1,0 +1,26 @@
+{
+  "name": "wxml",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "peerDependencies": {
+    "acorn": "^6.0.2"
+  },
+  "devDependencies": {
+    "acorn": "^6.0.2"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/xiaoyann/wxml.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/xiaoyann/wxml/issues"
+  },
+  "homepage": "https://github.com/xiaoyann/wxml#readme"
+}
