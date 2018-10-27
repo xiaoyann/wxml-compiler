@@ -8,12 +8,17 @@ const {tokTypes: tt, TokContext, tokContexts, TokenType, isNewLine, isIdentifier
 const tc_oTag = new TokContext('<tag', false);
 const tc_cTag = new TokContext('</tag', false);
 const tc_expr = new TokContext('<tag>...</tag>', true, true);
+const tc_attr_val = new TokContext('="..."', true, true)
 
 const tok = {
   jsxName: new TokenType('jsxName'),
   jsxText: new TokenType('jsxText', {beforeExpr: true}),
   jsxTagStart: new TokenType('jsxTagStart'),
-  jsxTagEnd: new TokenType('jsxTagEnd')
+  jsxTagEnd: new TokenType('jsxTagEnd'),
+  jsxExprStart: new TokenType('{{', {beforeExpr: true, startsExpr: true}),
+  jsxExprEnd: new TokenType('}}'),
+  jsxAttrValStart: new TokenType('="'),
+  jsxAttrValEnd: new TokenType('"')
 }
 
 tok.jsxTagStart.updateContext = function() {
@@ -21,6 +26,7 @@ tok.jsxTagStart.updateContext = function() {
   this.context.push(tc_oTag); // start opening tag context
   this.exprAllowed = false;
 };
+
 tok.jsxTagEnd.updateContext = function(prevType) {
   let out = this.context.pop();
   if (out === tc_oTag && prevType === tt.slash || out === tc_cTag) {
@@ -30,6 +36,28 @@ tok.jsxTagEnd.updateContext = function(prevType) {
     this.exprAllowed = true;
   }
 };
+
+tok.jsxAttrValStart.updateContext = function() {
+  this.context.push(tc_attr_val)
+  this.exprAllowed = false
+  tc_attr_val.quote = this.input.charCodeAt(this.pos - 1)
+}
+
+tok.jsxAttrValEnd.updateContext = function() {
+  this.context.pop()
+  this.exprAllowed = false
+  tc_attr_val.quote = undefined
+}
+
+tok.jsxExprStart.updateContext = function() {
+  this.exprAllowed = this.curContext() === tc_expr
+  this.context.push(tokContexts.b_tmpl)
+}
+
+tok.jsxExprEnd.updateContext = function() {
+  this.context.pop()
+  this.exprAllowed = this.curContext() === tc_expr
+}
 
 // Transforms JSX element name to string.
 
@@ -76,6 +104,10 @@ function plugin(options, Parser) {
               ++this.pos;
               return this.finishToken(tok.jsxTagStart);
             }
+            if (this.input.charCodeAt(this.pos + 1) === ch) {
+              this.pos += 2;
+              return this.finishToken(tok.jsxExprStart);
+            }
             return this.getTokenFromCode(ch);
           }
           out += this.input.slice(chunkStart, this.pos);
@@ -95,6 +127,31 @@ function plugin(options, Parser) {
           } else {
             ++this.pos;
           }
+        }
+      }
+    }
+
+    // Reads inline JSX contents token.
+    jsx_readAttrToken() {
+      const ctx = this.curContext()
+      const chunkStart = this.pos
+      for (;;) {
+        if (this.pos >= this.input.length) {
+          this.raise(this.start, 'Unterminated JSX contents');
+        }
+        let ch = this.input.charCodeAt(this.pos);
+        if (ch === ctx.quote) {
+          const chunk = this.input.slice(chunkStart, this.pos);
+          return this.finishToken(tok.jsxText, chunk);
+        } else if (ch === 123 && this.input.charCodeAt(this.pos + 1) === ch) {
+          if (this.start === this.pos) {
+            this.pos += 2;
+            return this.finishToken(tok.jsxExprStart);
+          }
+          const chunk = this.input.slice(chunkStart, this.pos);
+          return this.finishToken(tok.jsxText, chunk);
+        } else {
+          this.pos += 1;
         }
       }
     }
@@ -233,25 +290,6 @@ function plugin(options, Parser) {
       return node;
     }
 
-    // Parses any type of JSX attribute value.
-
-    jsx_parseAttributeValue() {
-      switch (this.type) {
-      case tt.braceL:
-        let node = this.jsx_parseExpressionContainer();
-        if (node.expression.type === 'JSXEmptyExpression')
-          this.raise(node.start, 'JSX attributes must only be assigned a non-empty expression');
-        return node;
-
-      case tok.jsxTagStart:
-      case tt.string:
-        return this.parseExprAtom();
-
-      default:
-        this.raise(this.start, 'JSX value should be either an expression or a quoted JSX text');
-      }
-    }
-
     // JSXEmptyExpression is unique type since it doesn't actually parse anything,
     // and so it should start at the end of last read token (left brace) and finish
     // at the beginning of the next one (right brace).
@@ -266,10 +304,10 @@ function plugin(options, Parser) {
     jsx_parseExpressionContainer() {
       let node = this.startNode();
       this.next();
-      node.expression = this.type === tt.braceR
+      node.expression = this.type === tok.jsxExprEnd
         ? this.jsx_parseEmptyExpression()
         : this.parseExpression();
-      this.expect(tt.braceR);
+      this.expect(tok.jsxExprEnd);
       return this.finishNode(node, 'JSXExpressionContainer');
     }
 
@@ -286,6 +324,46 @@ function plugin(options, Parser) {
       node.name = this.jsx_parseNamespacedName();
       node.value = this.eat(tt.eq) ? this.jsx_parseAttributeValue() : null;
       return this.finishNode(node, 'JSXAttribute');
+    }
+
+    // Parses any type of JSX attribute value.
+
+    jsx_parseAttributeValue() {
+      const node = this.startNode()
+      const expressions = []
+
+      this.next()
+
+      while (this.type !== tok.jsxAttrValEnd) {
+        if (this.type === tok.jsxText) {
+          expressions.push(this.parseExprAtom())
+        } else if (this.type === tok.jsxExprStart) {
+          expressions.push(this.jsx_parseExpressionContainer())
+        } else {
+          this.raise(this.start, 'JSX value should be either an expression or a quoted JSX text')
+        }
+      }
+
+      this.next()
+
+      // switch (this.type) {
+      // case tt.braceL:
+      //   let node = this.jsx_parseExpressionContainer();
+      //   if (node.expression.type === 'JSXEmptyExpression')
+      //     this.raise(node.start, 'JSX attributes must only be assigned a non-empty expression');
+      //   return node;
+
+      // case tok.jsxTagStart:
+      // case tt.string:
+      //   return this.parseExprAtom();
+      
+      // default:
+      //   this.raise(this.start, 'JSX value should be either an expression or a quoted JSX text');
+      // }
+
+      node.expressions = expressions
+
+      return this.finishNode(node, 'JSXAttributeValue')
     }
 
     // Parses JSX opening tag starting after '<'.
@@ -339,6 +417,7 @@ function plugin(options, Parser) {
             break;
 
           case tt.braceL:
+          case tok.jsxExprStart:
             children.push(this.jsx_parseExpressionContainer());
             break;
 
@@ -389,9 +468,29 @@ function plugin(options, Parser) {
     }
 
     readToken(code) {
+      console.log(String.fromCharCode(code))
+      
       let context = this.curContext();
 
       if (context === tc_expr) return this.jsx_readToken();
+
+      if (context === tokContexts.b_tmpl && code === 125) {
+        this.pos += 2
+        return this.finishToken(tok.jsxExprEnd)
+      }
+
+      if (code === 34 || code === 39) {
+        if (context === tc_oTag && this.type === tt.eq) {
+          this.pos += 1
+          return this.finishToken(tok.jsxAttrValStart)
+        }
+        if (context === tc_attr_val) {
+          this.pos += 1
+          return this.finishToken(tok.jsxAttrValEnd)
+        }
+      }
+
+      if (context === tc_attr_val) return this.jsx_readAttrToken();
 
       if (context === tc_oTag || context === tc_cTag) {
         if (isIdentifierStart(code)) return this.jsx_readWord();
@@ -401,8 +500,9 @@ function plugin(options, Parser) {
           return this.finishToken(tok.jsxTagEnd);
         }
 
-        if ((code === 34 || code === 39) && context == tc_oTag)
+        if ((code === 34 || code === 39) && context == tc_oTag) {
           return this.jsx_readString(code);
+        }
       }
 
       if (code === 60 && this.exprAllowed && this.input.charCodeAt(this.pos + 1) !== 33) {
